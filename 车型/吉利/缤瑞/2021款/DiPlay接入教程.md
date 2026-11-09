@@ -1,6 +1,8 @@
 # DiPlay 接入教程
 
-适用车型为吉利缤瑞 2021 款德赛车机。接入前由部署方核对 [原车指纹](原车修改教程.md#输入和输出)，确认候选 `gocsdk` 已运行并持有 `goc_spp` 监听，使用实际安装的 App 身份验证套接字访问权限。
+这份文档给想把 2021 款缤瑞德赛车机接进自己 DiPlay 版本的开发者。App 里要改的是 iAP2 传输层的建连入口，握手和 CarPlay 会话接回你现有的流程。
+
+接入前先核对 [原车指纹](原车修改教程.md#输入和输出)，确认补丁版 `gocsdk` 正在监听 `goc_spp`。再用实际装到车机上的 App 试连一次，确认它有权限访问这个套接字。
 
 ```text
 DiPlay App ← goc_spp 双向字节流 → gocsdk ← 蓝牙 RFCOMM → iPhone
@@ -10,14 +12,13 @@ DiPlay App ← goc_spp 双向字节流 → gocsdk ← 蓝牙 RFCOMM → iPhone
 | --- | --- |
 | 本地传输 | Android `LocalSocket`，流式套接字 |
 | 套接字名 | `goc_spp`，命名空间 `RESERVED`，对应 `/dev/socket/goc_spp` |
-| 初始写入 | 已配对 iPhone 的经典蓝牙地址，去掉冒号并转大写，以 ASCII 一次写入 12 字节。示例 `AA:BB:CC:DD:EE:FF` → `AABBCCDDEEFF` |
-| 初始写入边界 | 只发送地址字符，随后 `flush()`。UUID 由补丁内置，地址字段无换行、终止符或其他前缀 |
-| 后续收发 | 复用同一套接字的输入和输出流，按现有 iAP2 协议收发。以 iAP2 有效响应确认端到端链路 |
-| 生命周期 | 后台线程建连。为握手设置截止时间，失败或会话结束时关闭套接字，重试时新建套接字 |
+| 第一次写入 | 发送已配对 iPhone 的经典蓝牙地址。去掉冒号并转成大写，例如 `AA:BB:CC:DD:EE:FF` → `AABBCCDDEEFF`。一次写入这 12 个 ASCII 字节，再调用 `flush()` |
+| 写入格式 | 只发地址字符，省去前缀、换行和终止符。UUID 已写在补丁里 |
+| 后续收发 | 用同一个套接字的输入流和输出流跑 iAP2 |
 
 ## Java 接入片段
 
-将原有 iAP2 传输层的建连函数接到下方接口。调用方持有返回的套接字，把它的输入流和输出流传给已有 iAP2 会话，并在结束时关闭。
+在后台线程调用下面的 `openGocIap2`。拿到套接字后，把输入流和输出流交给现有的 iAP2 会话。握手要设超时，失败或会话结束时关掉套接字，重试时重新建一个。
 
 ```java
 import android.net.LocalSocket;
@@ -59,7 +60,7 @@ static LocalSocket openGocIap2(String phoneMac) throws IOException {
 }
 ```
 
-`openGocIap2` 返回时，只能确认 App 已接入本地套接字并写出手机地址。手机端 SDP 查找和 RFCOMM 建连由 `gocsdk` 继续处理。V049 的 App 传输层在写入地址后直接交出字节流，接入方可沿用既有 iAP2 探测与超时机制，将首个有效的 iAP2 响应作为远端链路就绪的依据。
+`openGocIap2` 返回时，App 已连上本地套接字并写出手机地址。接下来由 `gocsdk` 做 SDP 查找和 RFCOMM 建连。V049 写完地址后会直接交出字节流。接入时可以沿用 App 现有的 iAP2 探测和超时逻辑，收到第一个有效的 iAP2 响应再确认手机端链路通了。
 
 ## 联调时如何判断失败阶段
 
@@ -70,6 +71,6 @@ static LocalSocket openGocIap2(String phoneMac) throws IOException {
 | 本地地址写入成功，RFCOMM 未建立 | 核对 iPhone 经典蓝牙 MAC、配对状态、iAP2 服务是否可发现 |
 | RFCOMM 已建立，iAP2 失败 | 检查 App 的探测、握手或认证日志 |
 
-`gocsdk` 交付到 RFCOMM 字节流。iAP2 握手、CarPlay 会话和 App 的超时重试由接入方实现。进程部署、原车蓝牙回归和原服务恢复由实车集成方验收。当前候选仍待实车验证。
+目前补丁还待实车验证。车上联调时，除了试 DiPlay 连接，也要检查补丁进程的部署、原车蓝牙功能和原服务能否恢复。
 
-接口参照 DiPlay V049 APK 的 `AndroidGocSppSocket` 与 `GocSppTransport`，以及 [Android LocalSocketAddress.Namespace 文档](https://developer.android.com/reference/android/net/LocalSocketAddress.Namespace)。
+接口写法参考了 DiPlay V049 APK 里的 `AndroidGocSppSocket` 和 `GocSppTransport`。套接字命名空间见 [Android 文档](https://developer.android.com/reference/android/net/LocalSocketAddress.Namespace)。
