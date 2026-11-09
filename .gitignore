@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+gocsdk.original
+gocsdk(*).original
+gocsdk-local-test
